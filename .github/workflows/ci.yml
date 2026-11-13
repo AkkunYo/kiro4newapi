@@ -1,0 +1,56 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: git diff --exit-code -- plugin.js
+      - run: npm audit --audit-level=high
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+          cache: false
+      - name: Fetch pinned New API source
+        run: |
+          curl -fsSL --retry 3 https://codeload.github.com/QuantumNous/new-api/tar.gz/f2aa91232ed3e5878a614762ace6736a2b74257f -o "$RUNNER_TEMP/host.tar.gz"
+          echo "44d81c0cf29c73c30fe37c23fec2eaf38cb854fbb9cf689bb43811bfda302584  $RUNNER_TEMP/host.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/new-api"
+          tar -xzf "$RUNNER_TEMP/host.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/new-api"
+      - name: Validate hooks with the actual New API provider runtime
+        run: bash scripts/test-host.sh "$RUNNER_TEMP/new-api"
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, host]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package plugin and documentation
+        run: |
+          zip "kiro4newapi-${GITHUB_REF_NAME}.zip" plugin.js README.md README.en.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES
+          sha256sum plugin.js "kiro4newapi-${GITHUB_REF_NAME}.zip" > SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" plugin.js "kiro4newapi-${GITHUB_REF_NAME}.zip" SHA256SUMS --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md

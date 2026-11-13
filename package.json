@@ -1,0 +1,21 @@
+{
+  "name": "kiro4newapi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kiro provider plugin for New API",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "format:check": "prettier --check \"src/*.js\" \"scripts/*.mjs\" \"test/*.mjs\" \"test/*.json\" \"*.md\" package.json \".github/workflows/*.yml\"",
+    "check": "npm run format:check && npm run build && npm test"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "prettier": "3.6.2"
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "unixNow": 1800000000,
+  "cases": [
+    {
+      "name": "403 bearer refresh classification",
+      "hook": "credentialRejected",
+      "args": [
+        {},
+        {
+          "status": 403,
+          "body": "The bearer token included in the request is invalid"
+        }
+      ],
+      "expected": true
+    },
+    {
+      "name": "unrelated forbidden does not refresh",
+      "hook": "credentialRejected",
+      "args": [{}, { "status": 403, "body": "Forbidden" }],
+      "expected": false
+    },
+    {
+      "name": "live Grok context limit",
+      "hook": "convertResponse",
+      "args": [
+        { "path": "/v1/models" },
+        {
+          "status": 200,
+          "body": "{\"models\":[{\"modelId\":\"grok-4.7\",\"tokenLimits\":{\"maxInputTokens\":500000}}]}"
+        }
+      ],
+      "expected": {
+        "body": {
+          "object": "list",
+          "data": [
+            {
+              "id": "grok-4.7",
+              "object": "model",
+              "created": 0,
+              "owned_by": "kiro",
+              "name": "grok-4.7",
+              "context_length": 500000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "precise Credit window",
+      "hook": "parseBalance",
+      "args": [
+        {},
+        {
+          "status": 200,
+          "body": "{\"usageBreakdownList\":[{\"displayName\":\"Kiro\",\"currentUsageWithPrecision\":1.25,\"usageLimitWithPrecision\":500}]}"
+        }
+      ],
+      "expected": {
+        "windows": [
+          {
+            "name": { "en": "Kiro · monthly", "zh": "Kiro · monthly" },
+            "used": 1.25,
+            "limit": 500,
+            "unit": "Credit"
+          }
+        ]
+      }
+    },
+    {
+      "name": "no opaque vendor response forwarding",
+      "hook": "convertResponse",
+      "args": [
+        { "path": "/v1/messages" },
+        { "status": 500, "body": "{\"message\":\"fixture-secret\"}" }
+      ],
+      "expected": {
+        "error": {
+          "status": 502,
+          "code": "kiro_upstream_error",
+          "message": "Kiro request failed (HTTP 500)"
+        }
+      }
+    },
+    {
+      "name": "insecure endpoint rejected before signing",
+      "hook": "signRequest",
+      "args": [
+        {
+          "baseUrl": "http://q.us-east-1.amazonaws.com",
+          "config": { "credentialType": "api_key" },
+          "apiKey": "fixture-key"
+        }
+      ],
+      "expectedError": "Base URL must be an HTTPS Kiro"
+    }
+  ]
+}
