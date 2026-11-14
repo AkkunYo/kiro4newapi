@@ -19,6 +19,35 @@ const credential = {
   accessToken: "fixture-access",
 };
 
+test("IDC imports cannot be sent to the Social refresh endpoint", () => {
+  let calls = 0;
+  setup(() => {
+    calls++;
+    return { status: 200, body: { accessToken: "a" } };
+  });
+  assert.throws(
+    () =>
+      plugin.login(
+        {
+          ...loginCtx,
+          config: { loginMode: "import", credentialType: "social" },
+        },
+        {
+          fields: {
+            credential: JSON.stringify({
+              authMethod: "idc",
+              refreshToken: "fixture",
+              clientId: "id",
+              clientSecret: "secret",
+            }),
+          },
+        },
+      ),
+    /type/,
+  );
+  assert.equal(calls, 0);
+});
+
 test("social login binds PKCE/state and keeps complete redirect path", () => {
   const calls = [];
   setup((request) => {

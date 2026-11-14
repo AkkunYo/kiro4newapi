@@ -1,5 +1,5 @@
 export const PLUGIN_KEY = "akkunyo-kiro";
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 export const SOCIAL_ARN =
   "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
 export const IDC_ARN =

@@ -5,6 +5,162 @@ import { historyReasoning } from "../src/request.js";
 import { ctx, req, ev, setup, runStream } from "./helpers.mjs";
 setup();
 
+test("Chat and Responses preserve explicit native effort and cache writes", () => {
+  for (const path of ["/v1/chat/completions", "/v1/responses"])
+    for (const [model, effort, want] of [
+      ["grok-4.7", "high", "high"],
+      ["grok-4.7", "max", "xhigh"],
+      ["gpt-5.6-sol", "none", "none"],
+    ]) {
+      const context = { ...ctx, path },
+        request = { ...req({ reasoning_effort: effort }), model };
+      const output = plugin.convertRequest(context, request);
+      assert.deepEqual(output.body.additionalModelRequestFields, {
+        reasoning: { effort: want },
+      });
+      const response = runStream(plugin, context, request, [
+        ev("assistantResponseEvent", { content: "answer" }),
+        ev("metadataEvent", {
+          tokenUsage: {
+            uncachedInputTokens: 10,
+            outputTokens: 2,
+            cacheReadInputTokens: 20,
+            cacheWriteInputTokens: 3,
+          },
+        }),
+      ]);
+      assert.equal(
+        response.body.usage.prompt_tokens_details.cache_write_tokens,
+        3,
+      );
+    }
+});
+test("native Chat history carries tool results, images and developer instructions", () => {
+  const output = plugin.convertRequest(
+    { ...ctx, path: "/v1/chat/completions" },
+    req({
+      messages: [
+        { role: "developer", content: "rules" },
+        { role: "user", content: "read" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "t",
+              type: "function",
+              function: { name: "read", arguments: '{"path":"f"}' },
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "t", content: "ok" },
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,YQ==" },
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: "function",
+          function: { name: "read", parameters: { type: "object" } },
+        },
+      ],
+    }),
+  );
+  const state = output.body.conversationState;
+  assert.equal(state.history[0].userInputMessage.content, "rules");
+  assert.deepEqual(
+    state.history[3].assistantResponseMessage.toolUses[0].input,
+    { path: "f" },
+  );
+  assert.equal(
+    state.currentMessage.userInputMessage.userInputMessageContext.toolResults[0]
+      .content[0].text,
+    "ok",
+  );
+  assert.equal(
+    state.currentMessage.userInputMessage.images[0].source.bytes,
+    "YQ==",
+  );
+});
+
+test("AWS errors without an Exception suffix fail before stream output", () => {
+  for (const code of [
+    "InternalFailure",
+    "AccessDenied",
+    "ServiceUnavailable",
+    "Throttling",
+  ]) {
+    const output = runStream(plugin, ctx, req({}, true), [
+      ev(code, { message: "fixture-secret" }),
+    ]);
+    assert.equal(output.error?.status, 502, code);
+    assert.deepEqual(output.events, []);
+    assert.doesNotMatch(output.error.message, /fixture-secret/);
+  }
+});
+test("empty or metadata-only generation fails, hidden reasoning-only is still valid", () => {
+  for (const events of [
+    [],
+    [ev("metadataEvent", { tokenUsage: { outputTokens: 0 } })],
+  ])
+    assert.equal(runStream(plugin, ctx, req(), events).error?.status, 502);
+  assert.equal(
+    runStream(plugin, ctx, req(), [
+      ev("reasoningContentEvent", { text: "hidden" }),
+    ]).body.stop_reason,
+    "end_turn",
+  );
+});
+test("a reused history tool ID cannot keep a later unanswered call", () => {
+  const output = plugin.convertRequest(
+    ctx,
+    req({
+      messages: [
+        { role: "user", content: "start" },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "same", name: "read", input: {} }],
+        },
+        {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "same", content: "done" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "same", name: "write", input: {} }],
+        },
+        { role: "user", content: "next" },
+      ],
+    }),
+  );
+  const history = output.body.conversationState.history;
+  assert.equal(history[1].assistantResponseMessage.toolUses.length, 1);
+  assert.equal(history[3].assistantResponseMessage.toolUses.length, 0);
+});
+test("partial usage preserves estimates for unreported counts and rejects non-objects", () => {
+  const events = [
+    ev("assistantResponseEvent", { content: "12345678" }),
+    ev("metadataEvent", { tokenUsage: { uncachedInputTokens: 10 } }),
+  ];
+  assert.equal(
+    runStream(plugin, ctx, req(), events).body.usage.output_tokens,
+    2,
+  );
+  for (const tokenUsage of ["bad", [], 42])
+    assert.ok(
+      runStream(plugin, ctx, req(), [ev("metadataEvent", { tokenUsage })])
+        .error,
+    );
+});
+
 test("tool schemas are normalized without changing client data", () => {
   const input = {
     properties: null,
@@ -314,7 +470,7 @@ test("all three client routes support streaming and nonstreaming contracts", () 
         );
       else
         assert.equal(
-          path === "/v1/responses"
+          path !== "/v1/messages"
             ? output.body.choices[0].message.content
             : output.body.content[0].text,
           "answer",
@@ -540,7 +696,7 @@ test("request state is isolated across interleaved accounts", () => {
     ev("assistantResponseEvent", { content: "account A" }),
   );
   const bEnd = plugin.convertStreamEvent({ ...ctx, state: b }, { done: true });
-  assert.deepEqual(bEnd.body.content, []);
+  assert.equal(bEnd.error.status, 502);
   assert.equal(a.content, undefined);
   assert.equal(next.state.content[0].text, "account A");
 });

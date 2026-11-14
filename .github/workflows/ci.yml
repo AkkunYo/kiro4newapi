@@ -23,20 +23,32 @@ jobs:
       - run: git diff --exit-code -- plugin.js
       - run: npm audit --audit-level=high
   host:
+    strategy:
+      matrix:
+        include:
+          - version: rc.50
+            revision: f2aa91232ed3e5878a614762ace6736a2b74257f
+            sha256: 44d81c0cf29c73c30fe37c23fec2eaf38cb854fbb9cf689bb43811bfda302584
+          - version: rc.51
+            revision: c9c6da2786b6a0912215127e78e28fbc6650c85f
+            sha256: de8ce65cbfaf9f72bd77f44d693710f58b972d8cec52fe28794477bcb255dacd
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.10"
+          go-version: "1.26.11"
           cache: false
       - name: Fetch pinned New API source
+        env:
+          HOST_REVISION: ${{ matrix.revision }}
+          HOST_SHA256: ${{ matrix.sha256 }}
         run: |
-          curl -fsSL --retry 3 https://codeload.github.com/QuantumNous/new-api/tar.gz/f2aa91232ed3e5878a614762ace6736a2b74257f -o "$RUNNER_TEMP/host.tar.gz"
-          echo "44d81c0cf29c73c30fe37c23fec2eaf38cb854fbb9cf689bb43811bfda302584  $RUNNER_TEMP/host.tar.gz" | sha256sum -c -
+          curl -fsSL --retry 3 "https://codeload.github.com/QuantumNous/new-api/tar.gz/$HOST_REVISION" -o "$RUNNER_TEMP/host.tar.gz"
+          echo "$HOST_SHA256  $RUNNER_TEMP/host.tar.gz" | sha256sum -c -
           mkdir "$RUNNER_TEMP/new-api"
           tar -xzf "$RUNNER_TEMP/host.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/new-api"
-      - name: Validate hooks with the actual New API provider runtime
+      - name: Validate hooks, AWS framing and final client responses
         run: bash scripts/test-host.sh "$RUNNER_TEMP/new-api"
   release:
     if: startsWith(github.ref, 'refs/tags/v')

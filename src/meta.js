@@ -28,7 +28,7 @@ export const meta = {
     {
       incoming_path: "/v1/chat/completions",
       upstream_path: "/generateAssistantResponse",
-      converter: "openai_chat_completions_to_anthropic_messages+plugin",
+      converter: "plugin",
     },
     {
       incoming_path: "/v1/responses",

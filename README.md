@@ -4,7 +4,7 @@
 
 把 Kiro 账号接入 New API 的原生渠道插件。安装一个 `plugin.js`，由 New API 管理账号、刷新 Token 和转发请求，无需额外运行 CPA 或代理服务。
 
-基于 [kiro4cpa-plugin](https://github.com/AkkunYo/kiro4cpa-plugin) 的协议实现移植，已同步 [kiro.rs v0.9.9](https://github.com/ZyphrZero/kiro.rs/releases/tag/v0.9.9) 的适用修复。首版验证宿主为 [New API v1.0.0-rc.50](https://github.com/QuantumNous/new-api/releases/tag/v1.0.0-rc.50)，需要支持 Provider part 的插件系统；旧版仅支持任务插件的 New API 无法加载。
+基于 [kiro4cpa-plugin](https://github.com/AkkunYo/kiro4cpa-plugin) 的协议实现移植，已同步 [kiro.rs v0.9.9](https://github.com/ZyphrZero/kiro.rs/releases/tag/v0.9.9) 的适用修复。当前验证宿主为 New API v1.0.0-rc.50 和 [v1.0.0-rc.51](https://github.com/QuantumNous/new-api/releases/tag/v1.0.0-rc.51)，建议使用 rc.51（修复部分无 AVX CPU 的宿主崩溃）。需要支持 Provider part 的插件系统；旧版仅支持任务插件的 New API 无法加载。
 
 ## 安装
 
@@ -47,10 +47,10 @@
 
 ## 支持范围
 
-| 能力                    | 首版行为                                                                              |
+| 能力                    | 当前行为                                                                              |
 | ----------------------- | ------------------------------------------------------------------------------------- |
 | Claude Messages         | `/v1/messages`，流式与非流式                                                          |
-| OpenAI Chat Completions | `/v1/chat/completions`，通过宿主转换 Claude 协议                                      |
+| OpenAI Chat Completions | `/v1/chat/completions`，插件直接转换并保留原始 reasoning_effort                       |
 | OpenAI Responses        | `/v1/responses`，通过宿主 Chat Completions 转换链                                     |
 | 工具调用                | 历史配对、缺失工具定义补齐、长名称缩短/还原、交错片段按 ID 收集；参数完整并验证后输出 |
 | 图片                    | 内联 base64 JPEG / PNG / GIF / WebP；不下载远程图片 URL                               |
@@ -67,7 +67,7 @@
 - `max_tokens`、temperature、top_p、top_k、stop_sequences、tool_choice 和结构化输出约束没有可靠的 Kiro 对等控制，当前不会强制执行。助手末尾 prefill 会移除。Responses 的存储、后台任务、多模态扩展不由本插件实现。
 - 流式工具参数会缓冲至完整；响应状态最多约 4 MiB 字符、128 个工具调用。超限或损坏的工具参数会报错。
 - 只有 Claude Messages 的签名历史可以原样传入原生 reasoning union；OpenAI 转换链不保证保留签名。关闭 thinking 时不会把原生推理当作答案显示。
-- rc.50 的模型/额度管理请求仅对 HTTP 401 自动刷新；Kiro 若用 HTTP 403 表示 Token 失效，插件显示认证错误，不进行区域重试。等待宿主刷新、通过正常请求触发刷新，或重新登录后再查询。正常推理请求可通过 `credentialRejected` 识别此类 403。
+- rc.50 / rc.51 的模型/额度管理请求仅对 HTTP 401 自动刷新；Kiro 若用 HTTP 403 表示 Token 失效，插件显示认证错误，不进行区域重试。等待宿主刷新、通过正常请求触发刷新，或重新登录后再查询。正常推理请求可通过 `credentialRejected` 识别此类 403。
 - 不包含 CPA 的管理网页、二进制 RPC、账号冷却调度，也暂未移植 external_idp / Azure Entra 登录。账号调度、限流、刷新锁和持久化使用 New API 自身机制。
 
 ## 开发与验证
@@ -82,6 +82,10 @@ bash scripts/test-host.sh /path/to/new-api-v1.0.0-rc.50
 
 Node.js 22+；只有构建/测试需要 Node，部署仅需 New API。`npm run build` 使用 esbuild 生成单文件 ES 模块，无运行时 npm 依赖；插件不使用 Node API、全局 fetch、环境变量或共享账号状态。
 
-宿主测试复制一个测试文件到临时参考源码，使用实际 MoeJS 和 Provider API 检查返回值，退出时删除该测试文件。CI 固定 New API 提交 `f2aa91232ed3e5878a614762ace6736a2b74257f`；三平台执行协议/认证测试，Linux 执行宿主测试。所有凭据都是测试占位符，不访问真实 Kiro。
+宿主测试复制两个测试文件到临时参考源码，覆盖实际 MoeJS 返回值、宿主请求转换、AWS 帧解码和最终客户端协议/用量，退出时删除测试文件。CI 固定 rc.50 (`f2aa9123`) 和 rc.51 (`c9c6da27`) 并校验源码包 SHA-256；三平台执行协议/认证测试，Linux 执行两版宿主测试。所有凭据都是测试占位符，不访问真实 Kiro。
 
 协议基线：kiro4cpa-plugin `1582a9c`；kiro.rs `7dfb2c2`。MIT 许可与上游归属见 [LICENSE](LICENSE) 和 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。本仓库不打包 New API 服务端源码，宿主遵循其自身许可。
+
+## 审核记录
+
+2026-11-15：参考仓库 `ZyphrZero/kiro.rs` 默认分支与 v0.9.9 (`7dfb2c21dea5d2fa3618fdd603279d7fcef89074`) 完全一致，无新增上游逻辑需要同步。移植审核发现并修复：Chat effort 被宿主预算转换降级、GPT `none` 未发送原生字段、缓存写入计数遗漏、部分用量误置零、IDC 导入类型误匹配、AWS 错误/空流误报成功、重复工具 ID 导致未回答调用残留。新增完整宿主转换链测试，并保留上述真实账号和宿主能力边界。CodeGraph 索引仅用于本地开发，`.codegraph/` 已加入 `.gitignore`。

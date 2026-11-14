@@ -1,12 +1,12 @@
-# v0.1.0
+# v0.1.1
 
-首个 New API 原生 Kiro 渠道插件版本，基于 kiro4cpa-plugin `1582a9c`，同步 kiro.rs v0.9.9 适用修复。
+- 修复 Chat Completions 的原始 reasoning_effort 被宿主预算转换覆盖；保留 Grok max 映射与 GPT none 原生参数。
+- 修复 Responses 缓存写入 Token 遗漏；部分用量字段缺失时继续估算，显式零值保留。
+- 拒绝 IDC 凭据导入 Social 渠道，避免发送到错误的认证端点。
+- 将 AWS 错误事件、空响应流和异常用量明确报告为错误；保留合法的隐藏推理空答案。
+- 按具体工具调用配对历史结果，避免重复 ID 留下未回答调用。
+- 新增 New API rc.50 / rc.51 完整请求与响应链路验证，覆盖 AWS 帧、三种协议、工具和用量。
 
-- 支持 Claude Messages、OpenAI Chat Completions / Responses 的流式和非流式转换。
-- 支持 Google/GitHub 完整回调表单、Builder ID/IAM 设备登录、凭据导入、刷新及 API Key。
-- 接入实时模型列表、Credit 额度、工具流完整性校验、原生推理与历史签名保护。
-- 固定 New API v1.0.0-rc.50 宿主契约测试和三平台 Node 测试。
+验证使用模拟上游和实际宿主运行时，未用真实 Kiro 账号测试。Profile ARN 等边界见 README。
 
-验证基于模拟上游，无真实 Kiro 账号实测。Profile ARN 按渠道配置；其他边界见 README 的已知限制。
-
-Initial native New API Kiro provider release. Includes streaming/nonstreaming protocol conversion, OAuth/device login and credential import, token refresh, API keys, live models and Credit windows, tool integrity and reasoning safeguards. Verified using synthetic upstream responses and New API v1.0.0-rc.50; no live Kiro account validation. Profile ARN is configured per channel. See README.en.md for limitations.
+Fixes explicit Chat reasoning effort, native GPT none, cache-write and partial token accounting, mismatched IDC imports, silent AWS errors/empty streams, and reused tool IDs in history. Adds complete host conversion tests for rc.50 and rc.51. Synthetic upstream validation only; live-account and host limitations remain documented.

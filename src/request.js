@@ -150,7 +150,14 @@ export function chatToClaude(req) {
     ...(req.reasoning_effort
       ? {
           thinking: {
-            type: req.reasoning_effort === "none" ? "disabled" : "enabled",
+            // No enabled thinking for effort=none, but still send GPT's
+            // native effort field. An explicit disabled flag still wins.
+            type:
+              req.thinking?.type === "disabled"
+                ? "disabled"
+                : req.reasoning_effort === "none"
+                  ? ""
+                  : "enabled",
           },
           output_config: { effort: req.reasoning_effort },
         }
@@ -314,8 +321,9 @@ export function convertRequest(ctx, request) {
   base(ctx);
   if (!object(request.body))
     throw new Error("Expected a JSON messages request");
-  const req =
-    ctx.path === "/v1/responses" ? chatToClaude(request.body) : request.body;
+  const chat =
+    ctx.path === "/v1/responses" || ctx.path === "/v1/chat/completions";
+  const req = chat ? chatToClaude(request.body) : request.body;
   let model = String(request.model || req.model || ""),
     suffix = false;
   if (model.endsWith("-thinking")) {
@@ -375,26 +383,24 @@ export function convertRequest(ctx, request) {
         : { assistantResponseMessage: assistant(m.content, names) },
     );
   // Keep only matched calls/results, including historical orphan results.
-  const pending = new Set(),
+  const pending = new Map(),
     answered = new Set();
   for (const h of [...history, { userInputMessage: current }]) {
     for (const t of h.assistantResponseMessage?.toolUses || [])
-      pending.add(t.toolUseId);
+      pending.set(t.toolUseId, t);
     const context = h.userInputMessage?.userInputMessageContext;
     if (context)
       context.toolResults = context.toolResults.filter((t) => {
         if (!pending.has(t.toolUseId)) return false;
+        answered.add(pending.get(t.toolUseId));
         pending.delete(t.toolUseId);
-        answered.add(t.toolUseId);
         return true;
       });
   }
   for (const h of history)
     if (h.assistantResponseMessage?.toolUses)
       h.assistantResponseMessage.toolUses =
-        h.assistantResponseMessage.toolUses.filter((t) =>
-          answered.has(t.toolUseId),
-        );
+        h.assistantResponseMessage.toolUses.filter((t) => answered.has(t));
   const defined = new Set(
     tools.map((t) => t.toolSpecification.name.toLowerCase()),
   );
@@ -442,7 +448,7 @@ export function convertRequest(ctx, request) {
     state: {
       model,
       clientStream: Boolean(request.stream),
-      chat: ctx.path === "/v1/responses",
+      chat,
       thinking: thinking.enabled,
       names,
       inputTokens: estimate(JSON.stringify(req)),

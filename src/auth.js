@@ -83,7 +83,9 @@ function credential(ctx, data) {
   // Accept the existing plugin's credential spelling.
   const normalized = {
     social: "social",
-    idc: cfg.credentialType,
+    idc: ["builder-id", "iam"].includes(cfg.credentialType)
+      ? cfg.credentialType
+      : undefined,
     "builder-id": "builder-id",
     iam: "iam",
   }[type];
@@ -148,7 +150,7 @@ export function parseCallback(value, expectedState) {
     throw new Error(
       "Paste the complete http://127.0.0.1:3128/oauth/callback or /signin/callback URL",
     );
-  const fields = {};
+  const fields = Object.create(null);
   try {
     for (const part of match[2].split("&")) {
       const pos = part.indexOf("="),

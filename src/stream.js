@@ -10,21 +10,22 @@ const failure = (message) => ({
   },
 });
 function usage(s) {
-  const u = s.usage;
-  return u
-    ? {
-        input_tokens: u.uncachedInputTokens || 0,
-        output_tokens: u.outputTokens || 0,
-        cache_read_input_tokens: u.cacheReadInputTokens || 0,
-        cache_creation_input_tokens: u.cacheWriteInputTokens || 0,
-      }
-    : {
-        input_tokens: s.inputTokens,
-        output_tokens: s.outputChars
-          ? Math.ceil((s.outputCJK * 2) / 3) +
-            Math.ceil((s.outputChars - s.outputCJK) / 4)
-          : 0,
-      };
+  const u = s.usage || {};
+  const read = u.cacheReadInputTokens || 0,
+    write = u.cacheWriteInputTokens || 0;
+  return {
+    input_tokens:
+      u.uncachedInputTokens ?? Math.max(0, s.inputTokens - read - write),
+    output_tokens:
+      u.outputTokens ??
+      (s.outputChars
+        ? Math.ceil((s.outputCJK * 2) / 3) +
+          Math.ceil((s.outputChars - s.outputCJK) / 4)
+        : 0),
+    ...(s.usage
+      ? { cache_read_input_tokens: read, cache_creation_input_tokens: write }
+      : {}),
+  };
 }
 function chatUsage(u) {
   const prompt =
@@ -35,7 +36,10 @@ function chatUsage(u) {
     prompt_tokens: prompt,
     completion_tokens: u.output_tokens,
     total_tokens: prompt + u.output_tokens,
-    prompt_tokens_details: { cached_tokens: u.cache_read_input_tokens || 0 },
+    prompt_tokens_details: {
+      cached_tokens: u.cache_read_input_tokens || 0,
+      cache_write_tokens: u.cache_creation_input_tokens || 0,
+    },
   };
 }
 function stopReason(s) {
@@ -297,6 +301,8 @@ export function convertStreamEvent(ctx, input) {
   }
   try {
     if (input.done) {
+      if (!s.sawGeneration && !s.stop && !s.contextFull)
+        return failure("Kiro stream ended without a generation");
       if (!s.started) {
         emit("message_start", {
           message: {
@@ -330,8 +336,14 @@ export function convertStreamEvent(ctx, input) {
     const data = json(input.data || "{}", "Kiro stream event");
     if (!object(data)) return failure("Invalid Kiro stream event");
     const event = input.event || "";
-    if (event === "ContentLengthExceededException") s.stop = "MAX_TOKENS";
-    else if (/(?:Exception|Error|error)$/.test(event))
+    if (event === "ContentLengthExceededException") {
+      if (s.stop !== "CONTENT_FILTERED") s.stop = "MAX_TOKENS";
+    } else if (
+      /(?:Exception|Error|Failure|Denied|Unavailable|Throttling)$/i.test(
+        event,
+      ) ||
+      !event.endsWith("Event")
+    )
       return failure(
         "Kiro stream failed: " +
           (/^[A-Za-z0-9_]{1,80}$/.test(event) ? event : "upstream error"),
@@ -339,6 +351,7 @@ export function convertStreamEvent(ctx, input) {
     else if (event === "metadataEvent") {
       if (data.tokenUsage) {
         const u = data.tokenUsage;
+        if (!object(u)) return failure("Invalid Kiro token usage");
         if (
           [
             "uncachedInputTokens",
@@ -352,12 +365,14 @@ export function convertStreamEvent(ctx, input) {
           )
         )
           return failure("Invalid Kiro token usage");
-        s.usage = u;
+        s.usage = { ...s.usage, ...u };
       }
-      if (data.stopReason) s.stop = String(data.stopReason).toUpperCase();
+      if (data.stopReason && s.stop !== "CONTENT_FILTERED")
+        s.stop = String(data.stopReason).toUpperCase();
     } else if (event === "contextUsageEvent")
       s.contextFull = s.contextFull || data.contextUsagePercentage >= 100;
     else if (event === "toolUseEvent") {
+      s.sawGeneration = true;
       if (s.stop === "CONTENT_FILTERED")
         return failure("Kiro returned a tool after refusing the request");
       if (
@@ -390,7 +405,9 @@ export function convertStreamEvent(ctx, input) {
       count(s, data.input || "");
       t.stopped = t.stopped || data.stop === true;
     }
-    if (!s.started) {
+    if (["assistantResponseEvent", "reasoningContentEvent"].includes(event))
+      s.sawGeneration = true;
+    if (!s.started && s.sawGeneration) {
       emit("message_start", {
         message: {
           ...message(s),

@@ -50,7 +50,7 @@ SOFTWARE.
 
 // src/common.js
 var PLUGIN_KEY = "akkunyo-kiro";
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var SOCIAL_ARN = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK";
 var IDC_ARN = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX";
 var AUTH_REGIONS = [
@@ -237,7 +237,7 @@ var meta = {
     {
       incoming_path: "/v1/chat/completions",
       upstream_path: "/generateAssistantResponse",
-      converter: "openai_chat_completions_to_anthropic_messages+plugin"
+      converter: "plugin"
     },
     {
       incoming_path: "/v1/responses",
@@ -359,7 +359,7 @@ function credential(ctx, data) {
   ).toLowerCase();
   const normalized = {
     social: "social",
-    idc: cfg.credentialType,
+    idc: ["builder-id", "iam"].includes(cfg.credentialType) ? cfg.credentialType : void 0,
     "builder-id": "builder-id",
     iam: "iam"
   }[type];
@@ -413,7 +413,7 @@ function parseCallback(value, expectedState) {
     throw new Error(
       "Paste the complete http://127.0.0.1:3128/oauth/callback or /signin/callback URL"
     );
-  const fields = {};
+  const fields = /* @__PURE__ */ Object.create(null);
   try {
     for (const part of match[2].split("&")) {
       const pos = part.indexOf("="), key = decodeURIComponent(pos < 0 ? part : part.slice(0, pos));
@@ -751,7 +751,9 @@ function chatToClaude(req) {
     })),
     ...req.reasoning_effort ? {
       thinking: {
-        type: req.reasoning_effort === "none" ? "disabled" : "enabled"
+        // No enabled thinking for effort=none, but still send GPT's
+        // native effort field. An explicit disabled flag still wins.
+        type: req.thinking?.type === "disabled" ? "disabled" : req.reasoning_effort === "none" ? "" : "enabled"
       },
       output_config: { effort: req.reasoning_effort }
     } : {}
@@ -870,7 +872,8 @@ function convertRequest(ctx, request) {
   base(ctx);
   if (!object(request.body))
     throw new Error("Expected a JSON messages request");
-  const req = ctx.path === "/v1/responses" ? chatToClaude(request.body) : request.body;
+  const chat = ctx.path === "/v1/responses" || ctx.path === "/v1/chat/completions";
+  const req = chat ? chatToClaude(request.body) : request.body;
   let model = String(request.model || req.model || ""), suffix = false;
   if (model.endsWith("-thinking")) {
     model = model.slice(0, -9);
@@ -917,24 +920,22 @@ function convertRequest(ctx, request) {
     history.push(
       m.role === "user" ? { userInputMessage: user(m.content, model) } : { assistantResponseMessage: assistant(m.content, names) }
     );
-  const pending = /* @__PURE__ */ new Set(), answered = /* @__PURE__ */ new Set();
+  const pending = /* @__PURE__ */ new Map(), answered = /* @__PURE__ */ new Set();
   for (const h of [...history, { userInputMessage: current }]) {
     for (const t of h.assistantResponseMessage?.toolUses || [])
-      pending.add(t.toolUseId);
+      pending.set(t.toolUseId, t);
     const context = h.userInputMessage?.userInputMessageContext;
     if (context)
       context.toolResults = context.toolResults.filter((t) => {
         if (!pending.has(t.toolUseId)) return false;
+        answered.add(pending.get(t.toolUseId));
         pending.delete(t.toolUseId);
-        answered.add(t.toolUseId);
         return true;
       });
   }
   for (const h of history)
     if (h.assistantResponseMessage?.toolUses)
-      h.assistantResponseMessage.toolUses = h.assistantResponseMessage.toolUses.filter(
-        (t) => answered.has(t.toolUseId)
-      );
+      h.assistantResponseMessage.toolUses = h.assistantResponseMessage.toolUses.filter((t) => answered.has(t));
   const defined = new Set(
     tools.map((t) => t.toolSpecification.name.toLowerCase())
   );
@@ -978,7 +979,7 @@ function convertRequest(ctx, request) {
     state: {
       model,
       clientStream: Boolean(request.stream),
-      chat: ctx.path === "/v1/responses",
+      chat,
       thinking: thinking.enabled,
       names,
       inputTokens: estimate(JSON.stringify(req)),
@@ -1064,15 +1065,12 @@ var failure = (message2) => ({
   }
 });
 function usage(s) {
-  const u = s.usage;
-  return u ? {
-    input_tokens: u.uncachedInputTokens || 0,
-    output_tokens: u.outputTokens || 0,
-    cache_read_input_tokens: u.cacheReadInputTokens || 0,
-    cache_creation_input_tokens: u.cacheWriteInputTokens || 0
-  } : {
-    input_tokens: s.inputTokens,
-    output_tokens: s.outputChars ? Math.ceil(s.outputCJK * 2 / 3) + Math.ceil((s.outputChars - s.outputCJK) / 4) : 0
+  const u = s.usage || {};
+  const read = u.cacheReadInputTokens || 0, write = u.cacheWriteInputTokens || 0;
+  return {
+    input_tokens: u.uncachedInputTokens ?? Math.max(0, s.inputTokens - read - write),
+    output_tokens: u.outputTokens ?? (s.outputChars ? Math.ceil(s.outputCJK * 2 / 3) + Math.ceil((s.outputChars - s.outputCJK) / 4) : 0),
+    ...s.usage ? { cache_read_input_tokens: read, cache_creation_input_tokens: write } : {}
   };
 }
 function chatUsage(u) {
@@ -1081,7 +1079,10 @@ function chatUsage(u) {
     prompt_tokens: prompt,
     completion_tokens: u.output_tokens,
     total_tokens: prompt + u.output_tokens,
-    prompt_tokens_details: { cached_tokens: u.cache_read_input_tokens || 0 }
+    prompt_tokens_details: {
+      cached_tokens: u.cache_read_input_tokens || 0,
+      cache_write_tokens: u.cache_creation_input_tokens || 0
+    }
   };
 }
 function stopReason(s) {
@@ -1310,6 +1311,8 @@ function convertStreamEvent(ctx, input) {
   }
   try {
     if (input.done) {
+      if (!s.sawGeneration && !s.stop && !s.contextFull)
+        return failure("Kiro stream ended without a generation");
       if (!s.started) {
         emit("message_start", {
           message: {
@@ -1341,14 +1344,18 @@ function convertStreamEvent(ctx, input) {
     const data = json(input.data || "{}", "Kiro stream event");
     if (!object(data)) return failure("Invalid Kiro stream event");
     const event = input.event || "";
-    if (event === "ContentLengthExceededException") s.stop = "MAX_TOKENS";
-    else if (/(?:Exception|Error|error)$/.test(event))
+    if (event === "ContentLengthExceededException") {
+      if (s.stop !== "CONTENT_FILTERED") s.stop = "MAX_TOKENS";
+    } else if (/(?:Exception|Error|Failure|Denied|Unavailable|Throttling)$/i.test(
+      event
+    ) || !event.endsWith("Event"))
       return failure(
         "Kiro stream failed: " + (/^[A-Za-z0-9_]{1,80}$/.test(event) ? event : "upstream error")
       );
     else if (event === "metadataEvent") {
       if (data.tokenUsage) {
         const u = data.tokenUsage;
+        if (!object(u)) return failure("Invalid Kiro token usage");
         if ([
           "uncachedInputTokens",
           "outputTokens",
@@ -1358,12 +1365,14 @@ function convertStreamEvent(ctx, input) {
           (k) => u[k] !== void 0 && (!Number.isSafeInteger(u[k]) || u[k] < 0 || u[k] > 2147483647)
         ))
           return failure("Invalid Kiro token usage");
-        s.usage = u;
+        s.usage = { ...s.usage, ...u };
       }
-      if (data.stopReason) s.stop = String(data.stopReason).toUpperCase();
+      if (data.stopReason && s.stop !== "CONTENT_FILTERED")
+        s.stop = String(data.stopReason).toUpperCase();
     } else if (event === "contextUsageEvent")
       s.contextFull = s.contextFull || data.contextUsagePercentage >= 100;
     else if (event === "toolUseEvent") {
+      s.sawGeneration = true;
       if (s.stop === "CONTENT_FILTERED")
         return failure("Kiro returned a tool after refusing the request");
       if (typeof data.toolUseId !== "string" || !data.toolUseId || data.toolUseId.length > 256)
@@ -1389,7 +1398,9 @@ function convertStreamEvent(ctx, input) {
       count(s, data.input || "");
       t.stopped = t.stopped || data.stop === true;
     }
-    if (!s.started) {
+    if (["assistantResponseEvent", "reasoningContentEvent"].includes(event))
+      s.sawGeneration = true;
+    if (!s.started && s.sawGeneration) {
       emit("message_start", {
         message: {
           ...message(s),
